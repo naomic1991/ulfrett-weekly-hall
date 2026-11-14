@@ -71,6 +71,8 @@
 <label for="host">Host</label><input id="host" type="text" maxlength="120" placeholder="e.g. Spiritual Team">
 <label for="start">Start time (UK time)</label><input id="start" type="time">
 <label style="display:flex;align-items:center;gap:9px;margin:12px 0"><input id="isAnnouncement" type="checkbox" style="width:auto"> Special clan announcement (e.g. blót or gathering)</label>
+<label for="repeatMode">Repeat activity</label><select id="repeatMode"><option value="once">Just this date</option><option value="weekly">Every week (automatically)</option></select>
+<div id="repeatScopeRow" class="hidden"><label for="repeatScope">Change recurring activity</label><select id="repeatScope"><option value="one">This week only</option><option value="series">This and all future weeks</option></select><p class="hint">Change this week without altering other weeks, or update the regular activity.</p></div>
 <label for="desc">Description</label><textarea id="desc" maxlength="1200" placeholder="What's happening this day?"></textarea>
 <div class="buttons"><button id="saveBtn" class="actionbtn" type="button">Save activity</button><button id="newBtn" class="smallbtn" type="button">New activity</button><button id="deleteBtn" class="smallbtn danger hidden" type="button">Delete activity</button><button id="logoutBtn" class="smallbtn" type="button">Log out</button></div>
 <section class="gathering-manage" id="gatheringManage"><h4>⚔️ Next Gathering</h4>
@@ -93,6 +95,7 @@ const $=id=>document.getElementById(id), dayNames=['Monday','Tuesday','Wednesday
 const days=$('days'), eventPanel=$('event');
 let selected=3, weekMonday, entries=[], session=null, editorAuthorized=false;
 let gatheringEvents=[];
+let recurringTemplates=[];
 const GATHERING_PREFIX="[GATHERING] ";
 const timeZone='Europe/London';
 function londonToday(){const parts=new Intl.DateTimeFormat('en-GB',{timeZone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const get=t=>parts.find(p=>p.type===t).value;return `${get('year')}-${get('month')}-${get('day')}`;}
@@ -114,6 +117,16 @@ async function api(path,options={}){
 const ANNOUNCEMENT_PREFIX='[ANNOUNCEMENT] ';
 function isAnnouncement(e){return e.title.startsWith(ANNOUNCEMENT_PREFIX)}
 function cleanTitle(e){return isAnnouncement(e)?e.title.slice(ANNOUNCEMENT_PREFIX.length):isGathering(e)?gatheringName(e):e.title}
+const WEEKLY_PREFIX='[HALL-WEEKLY] ';
+const REPEAT_META='[[HALL-WEEKLY-META]]';
+function isWeeklyTemplate(e){return (e.title||'').startsWith(WEEKLY_PREFIX)}
+function repeatData(e){
+ const raw=e.description||'';
+ if(!raw.startsWith(REPEAT_META))return {description:raw,skips:[]};
+ try{const v=JSON.parse(raw.slice(REPEAT_META.length));return {description:String(v.description||''),skips:Array.isArray(v.skips)?v.skips:[]}}catch{return {description:'',skips:[]}}
+}
+function repeatDescription(description,skips){return REPEAT_META+JSON.stringify({description:description||'',skips:skips||[]})}
+function repeatInstance(template,date){const meta=repeatData(template);return {id:'repeat:'+template.id,repeatId:template.id,event_date:date,title:template.title.slice(WEEKLY_PREFIX.length),host:template.host,start_time:template.start_time,description:meta.description}}
 function eventsFor(i){return entries.filter(e=>e.event_date===dateFor(i))}
 function londonEpoch(date,time){
  // Convert a UK wall-clock time into an actual instant, allowing for GMT/BST.
@@ -172,7 +185,17 @@ function show(i){
 async function loadWeek(){
  $('weekLabel').textContent=friendlyDate(weekMonday)+' – '+friendlyDate(addDays(weekMonday,6));
  setStatus('Loading schedule…');
- try{entries=await api('/rest/v1/weekly_events?select=id,event_date,title,host,start_time,description&event_date=gte.'+weekMonday+'&event_date=lte.'+dateFor(6)+'&order=event_date.asc,start_time.asc');setStatus('Week of '+friendlyDate(weekMonday)+' · '+entries.length+' scheduled '+(entries.length===1?'activity':'activities'));}
+ try{
+ const [saved,templates]=await Promise.all([
+  api('/rest/v1/weekly_events?select=id,event_date,title,host,start_time,description&event_date=gte.'+weekMonday+'&event_date=lte.'+dateFor(6)+'&order=event_date.asc,start_time.asc'),
+  api('/rest/v1/weekly_events?select=id,event_date,title,host,start_time,description&title=like.'+encodeURIComponent(WEEKLY_PREFIX+'*')+'&event_date=lte.'+dateFor(6)+'&order=event_date.asc')
+ ]);
+ recurringTemplates=templates.filter(isWeeklyTemplate);
+ entries=saved.filter(e=>!isWeeklyTemplate(e));
+ for(const t of recurringTemplates){const skipped=repeatData(t).skips;for(let i=0;i<7;i++){const date=dateFor(i);if(date>=t.event_date&&!skipped.includes(date))entries.push(repeatInstance(t,date))}}
+ entries.sort((a,b)=>a.event_date.localeCompare(b.event_date)||(a.start_time||'').localeCompare(b.start_time||''));
+ setStatus('Week of '+friendlyDate(weekMonday)+' · '+entries.length+' scheduled '+(entries.length===1?'activity':'activities'));
+}
  catch(err){entries=[];setStatus('Could not load the schedule: '+err.message,true)}
  renderAnnouncements();await loadGatherings();show(selected);
 }
@@ -232,16 +255,45 @@ $('loginBtn').addEventListener('click',signIn);
 async function refreshSession(){if(!session?.refresh_token)return false;try{const res=await api('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:session.refresh_token})});session=res;sessionStorage.setItem('hallSession',JSON.stringify(res));return true}catch{session=null;sessionStorage.removeItem('hallSession');return false}}
 async function authorizedCall(path,options){if(session&&session.expires_at&&session.expires_at*1000<Date.now()+60000)await refreshSession();if(!session)throw new Error('Session expired. Please sign in again.');return api(path,options)}
 function populatePicker(){const current=$('eventPicker').value;const events=eventsFor(selected).filter(e=>!isGathering(e));$('eventPicker').innerHTML='<option value="">+ New activity</option>'+events.map(e=>'<option value="'+esc(e.id)+'">'+esc(cleanTitle(e))+'</option>').join('');if(events.some(e=>e.id===current))$('eventPicker').value=current;else $('eventPicker').value='';fillEditor()}
-function fillEditor(){const event=entries.find(e=>e.id===$('eventPicker').value);$('title').value=event?cleanTitle(event):'';$('isAnnouncement').checked=!!event&&isAnnouncement(event);$('host').value=event?.host||'';$('start').value=event?.start_time?.slice(0,5)||'';$('desc').value=event?.description||'';$('deleteBtn').classList.toggle('hidden',!event)}
+function fillEditor(){const event=entries.find(e=>e.id===$('eventPicker').value);$('title').value=event?cleanTitle(event):'';$('isAnnouncement').checked=!!event&&isAnnouncement(event);$('host').value=event?.host||'';$('start').value=event?.start_time?.slice(0,5)||'';$('desc').value=event?.description||'';$('repeatMode').value=event?.repeatId?'weekly':'once';$('repeatScope').value='one';$('repeatScopeRow').classList.toggle('hidden',!event?.repeatId);$('deleteBtn').classList.toggle('hidden',!event)}
+$('repeatMode').addEventListener('change',()=>{$('repeatScopeRow').classList.toggle('hidden',!$('eventPicker').value.startsWith('repeat:')||$('repeatMode').value!=='weekly')});
 $('eventPicker').addEventListener('change',fillEditor);$('newBtn').addEventListener('click',()=>{$('eventPicker').value='';fillEditor();$('title').focus()});
+async function writeEvent(id,record){return authorizedCall('/rest/v1/weekly_events'+(id?'?id=eq.'+encodeURIComponent(id):''),{method:id?'PATCH':'POST',headers:{Prefer:'return=minimal'},body:JSON.stringify(record)})}
+async function skipRecurringDate(template,date){const data=repeatData(template);if(data.skips.includes(date))return;await writeEvent(template.id,{description:repeatDescription(data.description,[...data.skips,date].sort())})}
 $('saveBtn').addEventListener('click',async()=>{
+ if(!editorAuthorized){editStatus('Please log in with editor access.',true);return}
  const title=$('title').value.trim();if(!title){editStatus('Please enter an activity title.',true);return}
- const currentId=$('eventPicker').value,record={event_date:dateFor(selected),title:($('isAnnouncement').checked?ANNOUNCEMENT_PREFIX:'')+title,host:$('host').value.trim()||null,start_time:$('start').value||null,description:$('desc').value.trim()||null};
+ const currentId=$('eventPicker').value,existing=entries.find(e=>e.id===currentId),date=dateFor(selected);
+ const record={event_date:date,title:($('isAnnouncement').checked?ANNOUNCEMENT_PREFIX:'')+title,host:$('host').value.trim()||null,start_time:$('start').value||null,description:$('desc').value.trim()||null};
+ const repeating=$('repeatMode').value==='weekly',scope=$('repeatScope').value;
  $('saveBtn').disabled=true;editStatus('Saving…');
- try{await authorizedCall('/rest/v1/weekly_events'+(currentId?'?id=eq.'+encodeURIComponent(currentId):''),{method:currentId?'PATCH':'POST',headers:{'Prefer':'return=minimal'},body:JSON.stringify(record)});await loadWeek();editStatus('Activity saved successfully.');}
- catch(err){editStatus('Could not save: '+err.message,true)}finally{$('saveBtn').disabled=false}
+ try{
+  if(existing?.repeatId){
+   const template=recurringTemplates.find(t=>t.id===existing.repeatId);if(!template)throw Error('Recurring event not found. Reload the calendar.');
+   if(repeating&&scope==='series'){
+    const data=repeatData(template);await writeEvent(template.id,{title:WEEKLY_PREFIX+record.title,host:record.host,start_time:record.start_time,description:repeatDescription(record.description,data.skips)});
+   }else{
+    // Create this week's replacement before suppressing the template instance.
+    await writeEvent(null,record);await skipRecurringDate(template,date);
+   }
+  }else if(repeating){
+   await writeEvent(currentId||null,{...record,title:WEEKLY_PREFIX+record.title,description:repeatDescription(record.description,[])});
+  }else await writeEvent(currentId||null,record);
+  await loadWeek();editStatus(repeating?'Recurring activity saved.':'Activity saved successfully.');
+ }catch(err){editStatus('Could not save: '+err.message,true)}finally{$('saveBtn').disabled=false}
 });
-$('deleteBtn').addEventListener('click',async()=>{const id=$('eventPicker').value;if(!id||!confirm('Delete this activity from the weekly schedule?'))return;try{await authorizedCall('/rest/v1/weekly_events?id=eq.'+encodeURIComponent(id),{method:'DELETE'});await loadWeek();editStatus('Activity deleted.')}catch(err){editStatus('Could not delete: '+err.message,true)}});
+$('deleteBtn').addEventListener('click',async()=>{
+ if(!editorAuthorized)return;
+ const id=$('eventPicker').value,existing=entries.find(e=>e.id===id);if(!existing)return;
+ try{
+  if(existing.repeatId){
+   const all=confirm('This is a weekly recurring activity.\n\nOK = delete EVERY week.\nCancel = choose to remove only this week.');
+   if(all){if(!confirm('Permanently delete this entire weekly series?'))return;await authorizedCall('/rest/v1/weekly_events?id=eq.'+encodeURIComponent(existing.repeatId),{method:'DELETE'})}
+   else{if(!confirm('Remove this activity from '+friendlyDate(existing.event_date)+' only?'))return;const t=recurringTemplates.find(x=>x.id===existing.repeatId);if(!t)throw Error('Recurring activity not found.');await skipRecurringDate(t,existing.event_date)}
+  }else{if(!confirm('Delete this activity from the weekly schedule?'))return;await authorizedCall('/rest/v1/weekly_events?id=eq.'+encodeURIComponent(id),{method:'DELETE'})}
+  await loadWeek();editStatus('Activity deleted.');
+ }catch(err){editStatus('Could not delete: '+err.message,true)}
+});
 $('logoutBtn').addEventListener('click',()=>{session=null;editorAuthorized=false;sessionStorage.removeItem('hallSession');updateAuthUI();editStatus('Logged out.');$('editorToggle').textContent='Spiritual Team · Editor login'});
 const fire=$('fire');for(let i=0;i<8;i++){const e=document.createElement('div');e.className='flame';e.style.cssText='--x:'+(22+i*7)+'%;--w:'+(9+Math.random()*10)+'%;--h:'+(50+Math.random()*35)+'%;--dur:'+(0.7+Math.random()*1.1)+'s';fire.appendChild(e)}for(let i=0;i<24;i++){const e=document.createElement('div');e.className='ember';e.style.cssText='--x:'+(20+Math.random()*60)+'%;--dx:'+((Math.random()-.5)*100)+'px;--dur:'+(2+Math.random()*3)+'s;--delay:-'+(Math.random()*5)+'s';$('embers').appendChild(e)}
 $('motion').addEventListener('click',()=>{const r=$('wrap').classList.toggle('reduced');$('motion').textContent=r?'▶':'✧'});
