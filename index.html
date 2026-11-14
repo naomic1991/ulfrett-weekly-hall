@@ -71,7 +71,7 @@
 <label for="host">Host</label><input id="host" type="text" maxlength="120" placeholder="e.g. Spiritual Team">
 <label for="start">Start time (UK time)</label><input id="start" type="time">
 <label style="display:flex;align-items:center;gap:9px;margin:12px 0"><input id="isAnnouncement" type="checkbox" style="width:auto"> Special clan announcement (e.g. blót or gathering)</label>
-<label for="repeatMode">Repeat activity</label><select id="repeatMode"><option value="once">Just this date</option><option value="weekly">Every week (automatically)</option></select>
+<label for="repeatMode">Repeat activity</label><select id="repeatMode"><option value="once">Just this date</option><option value="weekly">Every week on this day only</option></select><p class="hint">Repeats only on the selected day of the week (e.g. Monday every Monday), starting from the date you choose.</p>
 <div id="repeatScopeRow" class="hidden"><label for="repeatScope">Change recurring activity</label><select id="repeatScope"><option value="one">This week only</option><option value="series">This and all future weeks</option></select><p class="hint">Change this week without altering other weeks, or update the regular activity.</p></div>
 <label for="desc">Description</label><textarea id="desc" maxlength="1200" placeholder="What's happening this day?"></textarea>
 <div class="buttons"><button id="saveBtn" class="actionbtn" type="button">Save activity</button><button id="newBtn" class="smallbtn" type="button">New activity</button><button id="deleteBtn" class="smallbtn danger hidden" type="button">Delete activity</button><button id="logoutBtn" class="smallbtn" type="button">Log out</button></div>
@@ -192,7 +192,7 @@ async function loadWeek(){
  ]);
  recurringTemplates=templates.filter(isWeeklyTemplate);
  entries=saved.filter(e=>!isWeeklyTemplate(e));
- for(const t of recurringTemplates){const skipped=repeatData(t).skips;for(let i=0;i<7;i++){const date=dateFor(i);if(date>=t.event_date&&!skipped.includes(date))entries.push(repeatInstance(t,date))}}
+ for(const t of recurringTemplates){const skipped=repeatData(t).skips;const repeatDay=dayOfWeek(t.event_date);for(let i=0;i<7;i++){const date=dateFor(i);if(dayOfWeek(date)===repeatDay&&date>=t.event_date&&!skipped.includes(date))entries.push(repeatInstance(t,date))}}
  entries.sort((a,b)=>a.event_date.localeCompare(b.event_date)||(a.start_time||'').localeCompare(b.start_time||''));
  setStatus('Week of '+friendlyDate(weekMonday)+' · '+entries.length+' scheduled '+(entries.length===1?'activity':'activities'));
 }
